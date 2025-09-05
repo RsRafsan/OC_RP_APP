@@ -1,21 +1,16 @@
-import os
-import io
-import pickle
+import os 
+import io 
+import pickle 
 from typing import List, Optional, Dict, Any
-from sklearn.preprocessing import StandardScaler
-
-
-
-import numpy as np
-import pandas as pd
-import streamlit as st
-from sklearn.metrics import classification_report, confusion_matrix
-
+from sklearn.preprocessing import StandardScaler    
+import numpy as np 
+import pandas as pd 
+import streamlit as st 
+from sklearn.metrics import classification_report, confusion_matrix   
 
 # -----------------------------
 # Utilities
 # -----------------------------
-
 @st.cache_resource(show_spinner=False)
 def load_model(model_path: str):
     with open(model_path, "rb") as f:
@@ -58,10 +53,21 @@ def df_download_button(df: pd.DataFrame, filename: str, label: str):
     df.to_csv(csv_buf, index=False)
     st.download_button(label, data=csv_buf.getvalue(), file_name=filename, mime="text/csv")
 
+def assign_risk(pred_value: int) -> str:
+    """Low if prediction == 0, else High."""
+    return "Low Risk" if pred_value == 0 else "High Risk"
+
+def style_risk(val: str) -> str:
+    """Return CSS for risk level cell."""
+    if val == "Low Risk":
+        return "background-color:#c8e6c9; color:#1b5e20; font-weight:bold; text-align:center; border-radius:5px;"
+    elif val == "High Risk":
+        return "background-color:#ffcdd2; color:#b71c1c; font-weight:bold; text-align:center; border-radius:5px;"
+    return ""
+
 # -----------------------------
 # UI
 # -----------------------------
-
 st.set_page_config(page_title="Real-time Model Inference", layout="wide")
 st.title("Real-time Prediction App (Streamlit)")
 
@@ -103,11 +109,17 @@ with st.sidebar:
             scaler = None
             st.warning("No scaler found. Upload scaler_hybrid.pkl")
 
+# Load dataset medians
+try:
+    df = pd.read_csv("selected_features_data.csv")
+    medians = df.median(numeric_only=True)
+except Exception:
+    medians = {}
 
 tabs = st.tabs(["Single Prediction", "Batch Prediction"])
 
 # -----------------------------
-# Single Prediction (Paste OR Manual, better UI)
+# Single Prediction
 # -----------------------------
 with tabs[0]:
     st.subheader("Single Prediction (Paste or Manual Input)")
@@ -118,12 +130,26 @@ with tabs[0]:
         if not feature_names:
             st.error("Model does not expose feature_names_in_. Please save & load the same pipeline used in training.")
         else:
-            # Paste box
-            st.markdown("**Paste values (space-separated) to auto-fill the fields below:**")
-            st.caption(f"Expected order: `{', '.join(feature_names)}`")
+            # Instruction box
+            st.markdown(
+                """
+                <div style="
+                    background-color:#e3f2fd;
+                    padding:15px;
+                    border-radius:10px;
+                    border:1px solid #2196f3;
+                    ">
+                    <b>Instructions:</b><br>
+                    1. Paste values (space-separated) in the box below<br>
+                    2. Or adjust fields manually (defaults = dataset median)
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
             pasted_row = st.text_area(
                 "Paste values here (CTRL+Enter to Submit)", 
-                placeholder="59 42.65 1 51.33 45.8 66.75 32.7 ..."
+                placeholder="Example: 45 53.27 0 43.95 ..."
             )
 
             pasted_vals = None
@@ -138,28 +164,40 @@ with tabs[0]:
                 else:
                     st.warning(f"Expected {len(feature_names)} values, got {len(vals)}")
 
-            # Manual fields (auto-filled if pasted values available)
-            st.markdown("**Or enter values manually:**")
+            # Manual fields
             cols = st.columns(min(4, len(feature_names)))
             user_vals = {}
+
             for i, feat in enumerate(feature_names):
                 with cols[i % len(cols)]:
-                    default_val = "" if pasted_vals is None else str(pasted_vals[i])
-                    user_input = st.text_input(f"🔹 {feat}", value=default_val)
+                    if pasted_vals is not None:
+                        default_val = float(pasted_vals[i])
+                    else:
+                        default_val = float(medians.get(feat, 0.0))
+
+                    # 🔹 Special case: age = integer only
+                    if feat.lower() == "age":
+                        user_input = st.number_input(
+                            f"🔹 {feat}", 
+                            value=int(default_val), 
+                            step=1, 
+                            format="%d"
+                        )
+                    else:
+                        user_input = st.number_input(
+                            f"🔹 {feat}", 
+                            value=default_val, 
+                            step=0.1, 
+                            format="%.3f"
+                        )
                     user_vals[feat] = user_input
 
-            # Colorful predict button
+            # Predict button
             predict_clicked = st.button("Predict", type="primary")
 
             if predict_clicked:
                 try:
-                    # Convert all inputs
-                    clean_vals = {}
-                    for k, v in user_vals.items():
-                        if v == "" or v is None:
-                            raise ValueError(f"Missing value for feature: {k}")
-                        clean_vals[k] = float(v)
-
+                    clean_vals = {k: float(v) for k, v in user_vals.items()}
                     input_df = pd.DataFrame([clean_vals], columns=feature_names)
 
                     # Apply scaler
@@ -173,22 +211,24 @@ with tabs[0]:
                     # Predict
                     out = predict_with_model(model_obj, X_df)
 
-                    # Show prediction
-                    pred0 = int(out["pred"][0]) if isinstance(out["pred"][0], (np.integer, int)) else out["pred"][0]
-                    st.success(f"**Predicted class: {pred0}**")
+                    # Format results
+                    result = pd.DataFrame()
 
-                    # Show only prob_0 and prob_1 clearly
-                    proba = out.get("proba")
-                    if proba is not None and proba.shape[1] == 2:
-                        prob_df = pd.DataFrame([proba[0]], columns=["prob_0", "prob_1"])
-                        st.markdown("Class probabilities")
-                        st.dataframe(prob_df.style.highlight_max(axis=1, color="lightgreen"), use_container_width=True)
+                    if "proba" in out:
+                        for i in range(out["proba"].shape[1]):
+                            result[f"prob_{i}"] = out["proba"][:, i]
+
+                    result["prediction"] = out["pred"]
+                    result["risk_level"] = result["prediction"].apply(assign_risk)
+
+                    st.success("Prediction completed.")
+                    st.dataframe(result.style.applymap(style_risk, subset=["risk_level"]), use_container_width=True)
 
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
 
 # -----------------------------
-# Batch Prediction (with saved scaler)
+# Batch Prediction
 # -----------------------------
 with tabs[1]:
     st.subheader("Batch Prediction")
@@ -202,23 +242,23 @@ with tabs[1]:
                     if scaler is None:
                         st.error("Scaler not loaded! Upload scaler_hybrid.pkl")
                     else:
-                        # Scale using training scaler
                         X_scaled = scaler.transform(df)
                         df_scaled = pd.DataFrame(X_scaled, columns=df.columns, index=df.index)
 
-                        # Predict
                         out = predict_with_model(model_obj, df_scaled)
 
-                        # Build result
                         result = pd.DataFrame()
-                        result["prediction"] = out["pred"]
 
                         if "proba" in out:
                             for i in range(out["proba"].shape[1]):
                                 result[f"prob_{i}"] = out["proba"][:, i]
 
+                        result["prediction"] = out["pred"]
+                        result["risk_level"] = result["prediction"].apply(assign_risk)
+
                         st.success("Predictions completed.")
-                        st.dataframe(result.head(20), use_container_width=True)
+                        st.dataframe(result.head(20).style.applymap(style_risk, subset=["risk_level"]), use_container_width=True)
+
                         df_download_button(result, "predictions.csv", "Download predictions")
                 except Exception as e:
                     st.error(f"Prediction failed. Error: {e}")
