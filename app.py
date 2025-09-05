@@ -54,14 +54,27 @@ def df_download_button(df: pd.DataFrame, filename: str, label: str):
     df.to_csv(csv_buf, index=False)
     st.download_button(label, data=csv_buf.getvalue(), file_name=filename, mime="text/csv")
 
-def assign_risk(pred_value: int) -> str:
-    """Low if prediction == 0, else High."""
-    return "Low Risk" if pred_value == 0 else "High Risk"
+# -----------------------------
+# Risk assignment with thresholds
+# -----------------------------
+def assign_risk_from_proba(proba_high: float) -> str:
+    """
+    Assign risk level based on high-risk probability.
+    proba_high: probability of the "High Risk" class (0–1)
+    """
+    if proba_high < 0.40:
+        return "Low Risk"
+    elif proba_high < 0.70:
+        return "Moderate Risk"
+    else:
+        return "High Risk"
 
 def style_risk(val: str) -> str:
     """Return CSS for risk level cell."""
     if val == "Low Risk":
         return "background-color:#c8e6c9; color:#1b5e20; font-weight:bold; text-align:center; border-radius:5px;"
+    elif val == "Moderate Risk":
+        return "background-color:#fff9c4; color:#f57f17; font-weight:bold; text-align:center; border-radius:5px;"
     elif val == "High Risk":
         return "background-color:#ffcdd2; color:#b71c1c; font-weight:bold; text-align:center; border-radius:5px;"
     return ""
@@ -123,7 +136,7 @@ tabs = st.tabs(["Single Prediction", "Batch Prediction"])
 # Single Prediction
 # -----------------------------
 with tabs[0]:
-    st.subheader("Single Prediction (Manual Input Only)")
+    st.subheader("Single Prediction")
     if model_obj is None:
         st.info("Load a model from the sidebar to begin.")
     else:
@@ -131,18 +144,17 @@ with tabs[0]:
         if not feature_names:
             st.error("Model does not expose feature_names_in_. Please save & load the same pipeline used in training.")
         else:
-            # Instruction text
             st.markdown(
                 """
                 <span style="color:white; font-weight:bold; font-size:16px;">
                 Instructions:
                 </span><br>
-                Enter the feature values manually (defaults = dataset median or random value).
+                Enter the feature values:
                 """,
                 unsafe_allow_html=True
             )
 
-            # Initialize random defaults in session_state
+            # Initialize random defaults once
             if "random_defaults" not in st.session_state:
                 st.session_state.random_defaults = {}
                 for feat in feature_names:
@@ -151,7 +163,6 @@ with tabs[0]:
                     else:
                         st.session_state.random_defaults[feat] = random.uniform(1, 100)
 
-            # Manual fields with stable defaults
             cols = st.columns(min(4, len(feature_names)))
             user_vals = {}
 
@@ -159,7 +170,6 @@ with tabs[0]:
                 with cols[i % len(cols)]:
                     default_val = st.session_state.random_defaults[feat]
 
-                    # 🔹 Special case: age = integer only
                     if feat.lower() == "age":
                         user_input = st.number_input(
                             f"🔹 {feat}", 
@@ -178,7 +188,6 @@ with tabs[0]:
                         )
                     user_vals[feat] = user_input
 
-            # Predict button
             predict_clicked = st.button("Predict", type="primary")
 
             if predict_clicked:
@@ -186,7 +195,6 @@ with tabs[0]:
                     clean_vals = {k: float(v) for k, v in user_vals.items()}
                     input_df = pd.DataFrame([clean_vals], columns=feature_names)
 
-                    # Apply scaler
                     if 'scaler' not in globals() or scaler is None:
                         st.warning("Scaler not loaded. Using raw values.")
                         X_df = input_df
@@ -194,24 +202,31 @@ with tabs[0]:
                         X_scaled = scaler.transform(input_df)
                         X_df = pd.DataFrame(X_scaled, columns=feature_names, index=[0])
 
-                    # Predict
                     out = predict_with_model(model_obj, X_df)
 
-                    # Format results
-                    result = pd.DataFrame()
-
                     if "proba" in out:
-                        for i, cls in enumerate(out["classes_"]):
-                            result[f"{cls} (%)"] = (out["proba"][:, i] * 100).round(2).astype(str) + "%"
+                        # Assume class 1 = High Risk
+                        high_risk_index = np.where(out["classes_"] == 1)[0][0] if 1 in out["classes_"] else -1
+                        if high_risk_index >= 0:
+                            proba_high = out["proba"][:, high_risk_index][0]
+                            risk_label = assign_risk_from_proba(proba_high)
+                            percent = round(proba_high * 100, 2)
 
-                    result["Predicted Class"] = out["pred"].astype(str)
-                    result["Risk Level"] = result["Predicted Class"].astype(int).apply(assign_risk)
-
-                    st.success("Prediction completed.")
-                    st.dataframe(result.style.applymap(style_risk, subset=["Risk Level"]), use_container_width=True)
+                            st.success("Prediction completed.")
+                            st.markdown(
+                                f"""
+                                ### Prediction Result  
+                                **{risk_label}** of ovarian cancer — **{percent}%**
+                                """
+                            )
+                        else:
+                            st.error("Could not identify High Risk class in model.")
+                    else:
+                        st.error("Model does not support probability outputs.")
 
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
+
 
 # -----------------------------
 # Batch Prediction
@@ -239,8 +254,12 @@ with tabs[1]:
                             for i, cls in enumerate(out["classes_"]):
                                 result[f"{cls} (%)"] = (out["proba"][:, i] * 100).round(2).astype(str) + "%"
 
-                        result["Predicted Class"] = out["pred"].astype(str)
-                        result["Risk Level"] = result["Predicted Class"].astype(int).apply(assign_risk)
+                            high_risk_index = np.where(out["classes_"] == 1)[0][0] if 1 in out["classes_"] else -1
+                            if high_risk_index >= 0:
+                                proba_high = out["proba"][:, high_risk_index]
+                                result["Risk Level"] = [assign_risk_from_proba(p) for p in proba_high]
+
+                        result["Predicted Class"] = out["pred"]
 
                         st.success("Predictions completed.")
                         st.dataframe(result.head(20).style.applymap(style_risk, subset=["Risk Level"]), use_container_width=True)
