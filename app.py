@@ -66,41 +66,9 @@ def style_risk(val: str) -> str:
     return ""
 
 # -----------------------------
-# UI Config + Custom Theme
+# UI
 # -----------------------------
 st.set_page_config(page_title="Real-time Model Inference", layout="wide")
-
-# Custom theme (background + text colors)
-st.markdown(
-    """
-    <style>
-        /* Main app background */
-        .stApp {
-            background-color: #f7f9fc;
-            color: #333333;
-        }
-
-        /* Headers */
-        h1, h2, h3, h4, h5 {
-            color: #1a237e;
-        }
-
-        /* Sidebar */
-        section[data-testid="stSidebar"] {
-            background-color: #e8eaf6;
-        }
-
-        /* Instruction text */
-        .instruction-text {
-            font-size: 16px;
-            color: #0d47a1;
-            margin-bottom: 10px;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
 st.title("OvaPredict AI: Overian Cancer prediction")
 
 with st.sidebar:
@@ -162,20 +130,21 @@ with tabs[0]:
         if not feature_names:
             st.error("Model does not expose feature_names_in_. Please save & load the same pipeline used in training.")
         else:
-            # Instruction text (no box, themed)
+            # Instruction text (bold white, no box)
             st.markdown(
                 """
-                <div class="instruction-text">
-                    <b>Instructions:</b><br>
-                    1. Paste values (space-separated) in the box below<br>
-                    2. Or adjust fields manually 
-                </div>
+                <span style="color:white; font-weight:bold; font-size:16px;">
+                Instructions:
+                </span><br>
+                1. Paste values (space-separated) in the box below<br>
+                2. Or adjust fields manually <br>
+
                 """,
                 unsafe_allow_html=True
             )
 
             pasted_row = st.text_area(
-                "Paste values here (CTRL+Enter to Submit)"
+                "Paste values here (CTRL+Enter to Submit) :"
                 
             )
 
