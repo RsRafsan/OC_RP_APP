@@ -1,7 +1,7 @@
 import os 
 import io 
 import pickle 
-import random   # 🔹 added for random values
+import random
 from typing import List, Optional, Dict, Any
 from sklearn.preprocessing import StandardScaler    
 import numpy as np 
@@ -69,8 +69,8 @@ def style_risk(val: str) -> str:
 # -----------------------------
 # UI
 # -----------------------------
-st.set_page_config(page_title="Real-time Model Inference", layout="wide")
-st.title("OvaPredict AI: Overian Cancer prediction")
+st.set_page_config(page_title="OvaPredict AI", layout="wide")
+st.title("OvaPredict AI: Ovarian Cancer Prediction")
 
 with st.sidebar:
     st.header("Settings")
@@ -123,7 +123,7 @@ tabs = st.tabs(["Single Prediction", "Batch Prediction"])
 # Single Prediction
 # -----------------------------
 with tabs[0]:
-    st.subheader("Single Prediction (Paste or Manual Input)")
+    st.subheader("Single Prediction (Manual Input Only)")
     if model_obj is None:
         st.info("Load a model from the sidebar to begin.")
     else:
@@ -131,48 +131,33 @@ with tabs[0]:
         if not feature_names:
             st.error("Model does not expose feature_names_in_. Please save & load the same pipeline used in training.")
         else:
-            # Instruction text (bold white, no box)
+            # Instruction text
             st.markdown(
                 """
                 <span style="color:white; font-weight:bold; font-size:16px;">
                 Instructions:
                 </span><br>
-                1. Paste values (space-separated) in the box below<br>
-                2. Or adjust fields manually <br>
+                Enter the feature values manually (defaults = dataset median or random value).
                 """,
                 unsafe_allow_html=True
             )
 
-            pasted_row = st.text_area(
-                "Paste values here (CTRL+Enter to Submit) :"
-            )
+            # Initialize random defaults in session_state
+            if "random_defaults" not in st.session_state:
+                st.session_state.random_defaults = {}
+                for feat in feature_names:
+                    if feat in medians and not np.isnan(medians[feat]):
+                        st.session_state.random_defaults[feat] = float(medians[feat])
+                    else:
+                        st.session_state.random_defaults[feat] = random.uniform(1, 100)
 
-            pasted_vals = None
-            if pasted_row.strip():
-                vals = [x.strip() for x in pasted_row.split() if x.strip() != ""]
-                if len(vals) == len(feature_names):
-                    try:
-                        pasted_vals = [float(v) for v in vals]
-                        st.success("Values parsed and loaded into fields below.")
-                    except Exception:
-                        st.error("Could not convert pasted values to numbers.")
-                else:
-                    st.warning(f"Expected {len(feature_names)} values, got {len(vals)}")
-
-            # Manual fields
+            # Manual fields with stable defaults
             cols = st.columns(min(4, len(feature_names)))
             user_vals = {}
 
             for i, feat in enumerate(feature_names):
                 with cols[i % len(cols)]:
-                    if pasted_vals is not None:
-                        default_val = float(pasted_vals[i])
-                    else:
-                        # Use dataset median if available, otherwise a random float
-                        if feat in medians and not np.isnan(medians[feat]):
-                            default_val = float(medians[feat])
-                        else:
-                            default_val = random.uniform(1, 100)  # 🔹 random value instead of 0.0
+                    default_val = st.session_state.random_defaults[feat]
 
                     # 🔹 Special case: age = integer only
                     if feat.lower() == "age":
@@ -180,14 +165,16 @@ with tabs[0]:
                             f"🔹 {feat}", 
                             value=int(default_val), 
                             step=1, 
-                            format="%d"
+                            format="%d",
+                            key=f"input_{feat}_{i}"
                         )
                     else:
                         user_input = st.number_input(
                             f"🔹 {feat}", 
                             value=default_val, 
                             step=0.1, 
-                            format="%.3f"
+                            format="%.3f",
+                            key=f"input_{feat}_{i}"
                         )
                     user_vals[feat] = user_input
 
@@ -214,14 +201,14 @@ with tabs[0]:
                     result = pd.DataFrame()
 
                     if "proba" in out:
-                        for i in range(out["proba"].shape[1]):
-                            result[f"prob_{i}"] = out["proba"][:, i]
+                        for i, cls in enumerate(out["classes_"]):
+                            result[f"{cls} (%)"] = (out["proba"][:, i] * 100).round(2).astype(str) + "%"
 
-                    result["prediction"] = out["pred"]
-                    result["risk_level"] = result["prediction"].apply(assign_risk)
+                    result["Predicted Class"] = out["pred"].astype(str)
+                    result["Risk Level"] = result["Predicted Class"].astype(int).apply(assign_risk)
 
                     st.success("Prediction completed.")
-                    st.dataframe(result.style.applymap(style_risk, subset=["risk_level"]), use_container_width=True)
+                    st.dataframe(result.style.applymap(style_risk, subset=["Risk Level"]), use_container_width=True)
 
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
@@ -249,14 +236,14 @@ with tabs[1]:
                         result = pd.DataFrame()
 
                         if "proba" in out:
-                            for i in range(out["proba"].shape[1]):
-                                result[f"prob_{i}"] = out["proba"][:, i]
+                            for i, cls in enumerate(out["classes_"]):
+                                result[f"{cls} (%)"] = (out["proba"][:, i] * 100).round(2).astype(str) + "%"
 
-                        result["prediction"] = out["pred"]
-                        result["risk_level"] = result["prediction"].apply(assign_risk)
+                        result["Predicted Class"] = out["pred"].astype(str)
+                        result["Risk Level"] = result["Predicted Class"].astype(int).apply(assign_risk)
 
                         st.success("Predictions completed.")
-                        st.dataframe(result.head(20).style.applymap(style_risk, subset=["risk_level"]), use_container_width=True)
+                        st.dataframe(result.head(20).style.applymap(style_risk, subset=["Risk Level"]), use_container_width=True)
 
                         df_download_button(result, "predictions.csv", "Download predictions")
                 except Exception as e:
