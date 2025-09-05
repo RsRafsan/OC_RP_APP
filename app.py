@@ -1,6 +1,7 @@
 import os 
 import io 
 import pickle 
+import random   # 🔹 added for random values
 from typing import List, Optional, Dict, Any
 from sklearn.preprocessing import StandardScaler    
 import numpy as np 
@@ -138,14 +139,12 @@ with tabs[0]:
                 </span><br>
                 1. Paste values (space-separated) in the box below<br>
                 2. Or adjust fields manually <br>
-
                 """,
                 unsafe_allow_html=True
             )
 
             pasted_row = st.text_area(
                 "Paste values here (CTRL+Enter to Submit) :"
-                
             )
 
             pasted_vals = None
@@ -169,7 +168,11 @@ with tabs[0]:
                     if pasted_vals is not None:
                         default_val = float(pasted_vals[i])
                     else:
-                        default_val = float(medians.get(feat, 0.0))
+                        # Use dataset median if available, otherwise a random float
+                        if feat in medians and not np.isnan(medians[feat]):
+                            default_val = float(medians[feat])
+                        else:
+                            default_val = random.uniform(1, 100)  # 🔹 random value instead of 0.0
 
                     # 🔹 Special case: age = integer only
                     if feat.lower() == "age":
