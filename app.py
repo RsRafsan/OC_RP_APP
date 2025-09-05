@@ -66,10 +66,42 @@ def style_risk(val: str) -> str:
     return ""
 
 # -----------------------------
-# UI
+# UI Config + Custom Theme
 # -----------------------------
 st.set_page_config(page_title="Real-time Model Inference", layout="wide")
-st.title("Real-time Prediction App (Streamlit)")
+
+# Custom theme (background + text colors)
+st.markdown(
+    """
+    <style>
+        /* Main app background */
+        .stApp {
+            background-color: #f7f9fc;
+            color: #333333;
+        }
+
+        /* Headers */
+        h1, h2, h3, h4, h5 {
+            color: #1a237e;
+        }
+
+        /* Sidebar */
+        section[data-testid="stSidebar"] {
+            background-color: #e8eaf6;
+        }
+
+        /* Instruction text */
+        .instruction-text {
+            font-size: 16px;
+            color: #0d47a1;
+            margin-bottom: 10px;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.title("OvaPredict AI: Overian Cancer prediction")
 
 with st.sidebar:
     st.header("Settings")
@@ -130,26 +162,21 @@ with tabs[0]:
         if not feature_names:
             st.error("Model does not expose feature_names_in_. Please save & load the same pipeline used in training.")
         else:
-            # Instruction box
+            # Instruction text (no box, themed)
             st.markdown(
                 """
-                <div style="
-                    background-color:#e3f2fd;
-                    padding:15px;
-                    border-radius:10px;
-                    border:1px solid #2196f3;
-                    ">
+                <div class="instruction-text">
                     <b>Instructions:</b><br>
                     1. Paste values (space-separated) in the box below<br>
-                    2. Or adjust fields manually (defaults = dataset median)
+                    2. Or adjust fields manually 
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
             pasted_row = st.text_area(
-                "Paste values here (CTRL+Enter to Submit)", 
-                placeholder="Example: 45 53.27 0 43.95 ..."
+                "Paste values here (CTRL+Enter to Submit)"
+                
             )
 
             pasted_vals = None
