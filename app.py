@@ -146,8 +146,7 @@ with tabs[0]:
         else:
             st.markdown(
                 """
-                <span style="color:white; font-weight:bold; font-size:16px;">
-                Instructions:
+               
                 </span><br>
                 Enter the feature values:
                 """,
