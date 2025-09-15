@@ -58,10 +58,6 @@ def df_download_button(df: pd.DataFrame, filename: str, label: str):
 # Risk assignment with thresholds
 # -----------------------------
 def assign_risk_from_proba(proba_high: float) -> str:
-    """
-    Assign risk level based on high-risk probability.
-    proba_high: probability of the "High Risk" class (0–1)
-    """
     if proba_high < 0.40:
         return "Low Risk"
     elif proba_high < 0.70:
@@ -70,7 +66,6 @@ def assign_risk_from_proba(proba_high: float) -> str:
         return "High Risk"
 
 def style_risk(val: str) -> str:
-    """Return CSS for risk level cell."""
     if val == "Low Risk":
         return "background-color:#c8e6c9; color:#1b5e20; font-weight:bold; text-align:center; border-radius:5px;"
     elif val == "Moderate Risk":
@@ -80,15 +75,15 @@ def style_risk(val: str) -> str:
     return ""
 
 # -----------------------------
-# UI
+# UI Setup
 # -----------------------------
 st.set_page_config(page_title="OvaPredict AI", layout="wide")
 st.title("OvaPredict AI: Ovarian Cancer Prediction")
 
 with st.sidebar:
     st.header("Settings")
-    default_model_path = "ensemble_voting_top_hybrid_tuned_best.pkl"
-    default_scaler_path = "scaler_hybrid.pkl"   # your saved scaler
+    default_model_path = "overall_best_federated_xgb.pkl"
+    default_scaler_path = "scaler_hybrid.pkl"
 
     uploaded_model = st.file_uploader("Upload a .pkl model", type=["pkl"])
     uploaded_scaler = st.file_uploader("Upload a .pkl scaler", type=["pkl"])
@@ -103,6 +98,9 @@ with st.sidebar:
 
     try:
         model_obj = load_model(model_path)
+        if isinstance(model_obj, list):  # handle list case
+            st.warning("Model file contained a list. Using the first element.")
+            model_obj = model_obj[0]
         st.success(f"Loaded model: {os.path.basename(model_path)}")
     except Exception as e:
         model_obj = None
@@ -123,13 +121,50 @@ with st.sidebar:
             scaler = None
             st.warning("No scaler found. Upload scaler_hybrid.pkl")
 
-# Load dataset medians
+# -----------------------------
+# Load dataset medians & ranges
+# -----------------------------
 try:
     df = pd.read_csv("selected_features_data.csv")
     medians = df.median(numeric_only=True)
 except Exception:
     medians = {}
 
+try:
+    ranges = pd.read_csv("feature_ranges_summary.csv", index_col=0)
+except Exception:
+    ranges = None
+    st.warning("No feature_ranges_summary.csv found. Risk explanations will be limited.")
+
+# -----------------------------
+# Feature Names Fallback
+# -----------------------------
+FALLBACK_FEATURE_NAMES = [
+    'Age', 'HE4', 'Menopause', 'CA125', 'ALB', 'NEU', 'LYM%', 'ALP',
+    'PLT', 'LYM#', 'AST', 'PCT', 'IBIL', 'TBIL', 'CA72-4', 'GLO',
+    'MONO#', 'HGB', 'Na', 'CEA', 'Ca', 'GLU.', 'DBIL', 'TP', 'MCH'
+]
+
+# -----------------------------
+# Risk Explanation Function
+# -----------------------------
+def explain_feature(name, value):
+    """Only explain features that are outside the normal range, styled bold & bigger."""
+    if ranges is None or name not in ranges.index:
+        return None  # skip if no reference
+
+    q25, q75 = ranges.loc[name, "25%"], ranges.loc[name, "75%"]
+
+    if value < q25:
+        return f"<p style='font-size:16px;'><b>{name} = {value:.2f} → low risky</b></p>"
+    elif value > q75:
+        return f"<p style='font-size:16px;'><b>{name} = {value:.2f} → high risky</b></p>"
+    else:
+        return None  # skip normal
+
+# -----------------------------
+# Tabs
+# -----------------------------
 tabs = st.tabs(["Single Prediction", "Batch Prediction"])
 
 # -----------------------------
@@ -142,93 +177,97 @@ with tabs[0]:
     else:
         feature_names = try_extract_input_feature_names(model_obj)
         if not feature_names:
-            st.error("Model does not expose feature_names_in_. Please save & load the same pipeline used in training.")
-        else:
-            st.markdown(
-                """
-               
-                </span><br>
-                Enter the feature values:
-                """,
-                unsafe_allow_html=True
-            )
+            st.warning("Model does not expose feature_names_in_. Using fallback feature names.")
+            feature_names = FALLBACK_FEATURE_NAMES
 
-            # Initialize random defaults once
-            if "random_defaults" not in st.session_state:
-                st.session_state.random_defaults = {}
-                for feat in feature_names:
-                    if feat in medians and not np.isnan(medians[feat]):
-                        st.session_state.random_defaults[feat] = float(medians[feat])
-                    else:
-                        st.session_state.random_defaults[feat] = random.uniform(1, 100)
+        st.markdown("Enter the feature values:")
 
-            cols = st.columns(min(4, len(feature_names)))
-            user_vals = {}
+        # Defaults (once per session)
+        if "random_defaults" not in st.session_state:
+            st.session_state.random_defaults = {}
+            for feat in feature_names:
+                if feat in medians and not np.isnan(medians[feat]):
+                    st.session_state.random_defaults[feat] = float(medians[feat])
+                else:
+                    st.session_state.random_defaults[feat] = random.uniform(1, 100)
 
-            for i, feat in enumerate(feature_names):
-                with cols[i % len(cols)]:
-                    default_val = st.session_state.random_defaults[feat]
+        cols = st.columns(min(4, len(feature_names)))
+        user_vals = {}
 
-                    if feat.lower() == "age":
-                        user_input = st.number_input(
-                            f"🔹 {feat}", 
-                            value=int(default_val), 
-                            step=1, 
-                            format="%d",
-                            key=f"input_{feat}_{i}"
+        for i, feat in enumerate(feature_names):
+            with cols[i % len(cols)]:
+                default_val = st.session_state.random_defaults[feat]
+
+                if feat.lower() == "age":
+                    user_input = st.number_input(
+                        f"🔹 {feat}", 
+                        value=int(default_val), 
+                        step=1, 
+                        format="%d",
+                        key=f"input_{feat}_{i}"
+                    )
+                else:
+                    user_input = st.number_input(
+                        f"🔹 {feat}", 
+                        value=default_val, 
+                        step=0.1, 
+                        format="%.3f",
+                        key=f"input_{feat}_{i}"
+                    )
+                user_vals[feat] = user_input
+
+        predict_clicked = st.button("Predict", type="primary")
+
+        if predict_clicked:
+            try:
+                clean_vals = {k: float(v) for k, v in user_vals.items()}
+                input_df = pd.DataFrame([clean_vals], columns=feature_names)
+
+                if 'scaler' not in globals() or scaler is None:
+                    st.warning("Scaler not loaded. Using raw values.")
+                    X_df = input_df
+                else:
+                    X_scaled = scaler.transform(input_df)
+                    X_df = pd.DataFrame(X_scaled, columns=feature_names, index=[0])
+
+                out = predict_with_model(model_obj, X_df)
+
+                if "proba" in out:
+                    high_risk_index = np.where(out["classes_"] == 1)[0][0] if 1 in out["classes_"] else -1
+                    if high_risk_index >= 0:
+                        proba_high = out["proba"][:, high_risk_index][0]
+                        risk_label = assign_risk_from_proba(proba_high)
+                        percent = proba_high * 100
+
+                        # ✅ Show main result
+                        st.success("Prediction completed.")
+                        st.markdown(
+                            f"""
+                            ### Prediction Result  
+                            **{risk_label} ({percent:.2f}%)**
+                            """
                         )
-                    else:
-                        user_input = st.number_input(
-                            f"🔹 {feat}", 
-                            value=default_val, 
-                            step=0.1, 
-                            format="%.3f",
-                            key=f"input_{feat}_{i}"
-                        )
-                    user_vals[feat] = user_input
 
-            predict_clicked = st.button("Predict", type="primary")
+                        # ✅ Risk Indicators
+                        st.markdown("### Risk Indicators")
+                        explanations = [explain_feature(f, v) for f, v in clean_vals.items()]
+                        explanations = [e for e in explanations if e is not None]
 
-            if predict_clicked:
-                try:
-                    clean_vals = {k: float(v) for k, v in user_vals.items()}
-                    input_df = pd.DataFrame([clean_vals], columns=feature_names)
-
-                    if 'scaler' not in globals() or scaler is None:
-                        st.warning("Scaler not loaded. Using raw values.")
-                        X_df = input_df
-                    else:
-                        X_scaled = scaler.transform(input_df)
-                        X_df = pd.DataFrame(X_scaled, columns=feature_names, index=[0])
-
-                    out = predict_with_model(model_obj, X_df)
-
-                    if "proba" in out:
-                        # Assume class 1 = High Risk
-                        high_risk_index = np.where(out["classes_"] == 1)[0][0] if 1 in out["classes_"] else -1
-                        if high_risk_index >= 0:
-                            proba_high = out["proba"][:, high_risk_index][0]
-                            risk_label = assign_risk_from_proba(proba_high)
-                            percent = round(proba_high * 100, 2)
-
-                            st.success("Prediction completed.")
-                            st.markdown(
-                                f"""
-                                ### Prediction Result  
-                                **{risk_label}** of ovarian cancer — **{percent}%**
-                                """
-                            )
+                        if explanations:
+                            st.markdown("".join(explanations), unsafe_allow_html=True)
                         else:
-                            st.error("Could not identify High Risk class in model.")
+                            st.markdown("✅ All features are within normal range.")
+
                     else:
-                        st.error("Model does not support probability outputs.")
+                        st.error("Could not identify High Risk class in model.")
+                else:
+                    st.error("Model does not support probability outputs.")
 
-                except Exception as e:
-                    st.error(f"Prediction failed: {e}")
-
+            except Exception as e:
+                st.error(f"Prediction failed: {e}")
 
 # -----------------------------
-# Batch Prediction
+# Batch Prediction (unchanged)
 # -----------------------------
 with tabs[1]:
     st.subheader("Batch Prediction")
@@ -239,11 +278,16 @@ with tabs[1]:
             st.write("Preview:", df.head())
             if st.button("Predict (Batch)"):
                 try:
+                    feature_names = try_extract_input_feature_names(model_obj)
+                    if not feature_names:
+                        st.warning("Model does not expose feature_names_in_. Using fallback feature names.")
+                        feature_names = FALLBACK_FEATURE_NAMES
+
                     if scaler is None:
                         st.error("Scaler not loaded! Upload scaler_hybrid.pkl")
                     else:
-                        X_scaled = scaler.transform(df)
-                        df_scaled = pd.DataFrame(X_scaled, columns=df.columns, index=df.index)
+                        X_scaled = scaler.transform(df[feature_names])
+                        df_scaled = pd.DataFrame(X_scaled, columns=feature_names, index=df.index)
 
                         out = predict_with_model(model_obj, df_scaled)
 
