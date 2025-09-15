@@ -55,12 +55,13 @@ def df_download_button(df: pd.DataFrame, filename: str, label: str):
     st.download_button(label, data=csv_buf.getvalue(), file_name=filename, mime="text/csv")
 
 # -----------------------------
-# Risk assignment with thresholds
+# Risk assignment based on High Risk probability
 # -----------------------------
-def assign_risk_from_proba(proba_high: float) -> str:
-    if proba_high < 0.40:
+def risk_label_from_proba(p_high: float) -> str:
+    """Assign risk label purely from high-risk probability"""
+    if p_high < 0.40:
         return "Low Risk"
-    elif proba_high < 0.70:
+    elif p_high < 0.70:
         return "Moderate Risk"
     else:
         return "High Risk"
@@ -73,6 +74,34 @@ def style_risk(val: str) -> str:
     elif val == "High Risk":
         return "background-color:#ffcdd2; color:#b71c1c; font-weight:bold; text-align:center; border-radius:5px;"
     return ""
+
+# -----------------------------
+# SHAP explanation using file
+# -----------------------------
+def explain_with_shap(input_df, shap_values_df, feature_names, abs_threshold: float = 0.02, top_k: int = 8):
+    """Return only HIGH RISK indicators from precomputed SHAP values"""
+    if shap_values_df is None:
+        return []
+
+    cols = [c for c in feature_names if c in shap_values_df.columns]
+    if not cols:
+        return []
+
+    mean_abs = shap_values_df[cols].abs().mean()
+    mean_signed = shap_values_df[cols].mean()
+
+    # keep only strong & positive (pushing towards high risk)
+    strong = mean_abs[mean_abs >= abs_threshold].sort_values(ascending=False)
+    if strong.empty:
+        strong = mean_abs.sort_values(ascending=False).head(min(top_k, len(cols)))
+
+    explanations = []
+    for feat in strong.index:
+        if mean_signed[feat] > 0:
+            val = float(input_df.iloc[0].get(feat, np.nan))
+            explanations.append(f"<p style='font-size:16px;'><b>{feat} = {val:.2f} → High Risk</b></p>")
+
+    return explanations
 
 # -----------------------------
 # UI Setup
@@ -98,7 +127,7 @@ with st.sidebar:
 
     try:
         model_obj = load_model(model_path)
-        if isinstance(model_obj, list):  # handle list case
+        if isinstance(model_obj, list):
             st.warning("Model file contained a list. Using the first element.")
             model_obj = model_obj[0]
         st.success(f"Loaded model: {os.path.basename(model_path)}")
@@ -122,7 +151,7 @@ with st.sidebar:
             st.warning("No scaler found. Upload scaler_hybrid.pkl")
 
 # -----------------------------
-# Load dataset medians & ranges
+# Load dataset medians & SHAP
 # -----------------------------
 try:
     df = pd.read_csv("selected_features_data.csv")
@@ -131,36 +160,17 @@ except Exception:
     medians = {}
 
 try:
-    ranges = pd.read_csv("feature_ranges_summary.csv", index_col=0)
+    shap_values_df = pd.read_csv("shap_values.csv")
+    st.sidebar.success("Loaded SHAP values from shap_values.csv")
 except Exception:
-    ranges = None
-    st.warning("No feature_ranges_summary.csv found. Risk explanations will be limited.")
+    shap_values_df = None
+    st.sidebar.warning("No shap_values.csv found. Risk indicators will be limited.")
 
-# -----------------------------
-# Feature Names Fallback
-# -----------------------------
 FALLBACK_FEATURE_NAMES = [
     'Age', 'HE4', 'Menopause', 'CA125', 'ALB', 'NEU', 'LYM%', 'ALP',
     'PLT', 'LYM#', 'AST', 'PCT', 'IBIL', 'TBIL', 'CA72-4', 'GLO',
     'MONO#', 'HGB', 'Na', 'CEA', 'Ca', 'GLU.', 'DBIL', 'TP', 'MCH'
 ]
-
-# -----------------------------
-# Risk Explanation Function
-# -----------------------------
-def explain_feature(name, value):
-    """Only explain features that are outside the normal range, styled bold & bigger."""
-    if ranges is None or name not in ranges.index:
-        return None  # skip if no reference
-
-    q25, q75 = ranges.loc[name, "25%"], ranges.loc[name, "75%"]
-
-    if value < q25:
-        return f"<p style='font-size:16px;'><b>{name} = {value:.2f} → low risky</b></p>"
-    elif value > q75:
-        return f"<p style='font-size:16px;'><b>{name} = {value:.2f} → high risky</b></p>"
-    else:
-        return None  # skip normal
 
 # -----------------------------
 # Tabs
@@ -172,49 +182,42 @@ tabs = st.tabs(["Single Prediction", "Batch Prediction"])
 # -----------------------------
 with tabs[0]:
     st.subheader("Single Prediction")
+
     if model_obj is None:
         st.info("Load a model from the sidebar to begin.")
     else:
-        feature_names = try_extract_input_feature_names(model_obj)
-        if not feature_names:
-            st.warning("Model does not expose feature_names_in_. Using fallback feature names.")
-            feature_names = FALLBACK_FEATURE_NAMES
-
+        feature_names = try_extract_input_feature_names(model_obj) or FALLBACK_FEATURE_NAMES
         st.markdown("Enter the feature values:")
 
-        # Defaults (once per session)
-        if "random_defaults" not in st.session_state:
-            st.session_state.random_defaults = {}
-            for feat in feature_names:
-                if feat in medians and not np.isnan(medians[feat]):
-                    st.session_state.random_defaults[feat] = float(medians[feat])
-                else:
-                    st.session_state.random_defaults[feat] = random.uniform(1, 100)
+        if "static_defaults" not in st.session_state:
+            st.session_state.static_defaults = {
+                feat: float(medians.get(feat, random.uniform(1, 100)))
+                for feat in feature_names
+            }
 
         cols = st.columns(min(4, len(feature_names)))
         user_vals = {}
 
         for i, feat in enumerate(feature_names):
             with cols[i % len(cols)]:
-                default_val = st.session_state.random_defaults[feat]
-
+                default_val = st.session_state.static_defaults[feat]
                 if feat.lower() == "age":
                     user_input = st.number_input(
-                        f"🔹 {feat}", 
-                        value=int(default_val), 
-                        step=1, 
+                        f"🔹 {feat}",
+                        value=int(default_val),
+                        step=1,
                         format="%d",
                         key=f"input_{feat}_{i}"
                     )
                 else:
                     user_input = st.number_input(
-                        f"🔹 {feat}", 
-                        value=default_val, 
-                        step=0.1, 
+                        f"🔹 {feat}",
+                        value=float(default_val),
+                        step=0.1,
                         format="%.3f",
                         key=f"input_{feat}_{i}"
                     )
-                user_vals[feat] = user_input
+                user_vals[feat] = float(user_input)
 
         predict_clicked = st.button("Predict", type="primary")
 
@@ -223,51 +226,40 @@ with tabs[0]:
                 clean_vals = {k: float(v) for k, v in user_vals.items()}
                 input_df = pd.DataFrame([clean_vals], columns=feature_names)
 
-                if 'scaler' not in globals() or scaler is None:
+                if scaler is None:
                     st.warning("Scaler not loaded. Using raw values.")
                     X_df = input_df
                 else:
                     X_scaled = scaler.transform(input_df)
                     X_df = pd.DataFrame(X_scaled, columns=feature_names, index=[0])
 
-                out = predict_with_model(model_obj, X_df)
+                # ✅ always compute probability of High Risk
+                proba = model_obj.predict_proba(X_df)[0]
+                classes = getattr(model_obj, "classes_", np.array([0, 1]))
+                idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
+                p_high = float(proba[idx_high])
 
-                if "proba" in out:
-                    high_risk_index = np.where(out["classes_"] == 1)[0][0] if 1 in out["classes_"] else -1
-                    if high_risk_index >= 0:
-                        proba_high = out["proba"][:, high_risk_index][0]
-                        risk_label = assign_risk_from_proba(proba_high)
-                        percent = proba_high * 100
+                risk_label = risk_label_from_proba(p_high)
+                percent = p_high * 100
 
-                        # ✅ Show main result
-                        st.success("Prediction completed.")
-                        st.markdown(
-                            f"""
-                            ### Prediction Result  
-                            **{risk_label} ({percent:.2f}%)**
-                            """
-                        )
+                st.success("Prediction completed.")
+                st.markdown(f"### Prediction Result\n**{risk_label} ({percent:.2f}%)**")
 
-                        # ✅ Risk Indicators
-                        st.markdown("### Risk Indicators")
-                        explanations = [explain_feature(f, v) for f, v in clean_vals.items()]
-                        explanations = [e for e in explanations if e is not None]
-
-                        if explanations:
-                            st.markdown("".join(explanations), unsafe_allow_html=True)
-                        else:
-                            st.markdown("✅ All features are within normal range.")
-
-                    else:
-                        st.error("Could not identify High Risk class in model.")
+                # ✅ Risk Indicators
+                st.markdown("### Risk Indicators (from SHAP)")
+                if risk_label == "Low Risk":
+                    st.markdown("✅ All features are within normal range.")
                 else:
-                    st.error("Model does not support probability outputs.")
+                    explanations = explain_with_shap(input_df, shap_values_df, feature_names)
+                    if explanations:
+                        st.markdown("".join(explanations), unsafe_allow_html=True)
+                    else:
+                        st.markdown("✅ No strong high-risk features found.")
 
             except Exception as e:
                 st.error(f"Prediction failed: {e}")
-
 # -----------------------------
-# Batch Prediction (unchanged)
+# Batch Prediction (updated with % formatting)
 # -----------------------------
 with tabs[1]:
     st.subheader("Batch Prediction")
@@ -276,12 +268,10 @@ with tabs[1]:
         if batch_file:
             df = pd.read_csv(batch_file)
             st.write("Preview:", df.head())
+
             if st.button("Predict (Batch)"):
                 try:
-                    feature_names = try_extract_input_feature_names(model_obj)
-                    if not feature_names:
-                        st.warning("Model does not expose feature_names_in_. Using fallback feature names.")
-                        feature_names = FALLBACK_FEATURE_NAMES
+                    feature_names = try_extract_input_feature_names(model_obj) or FALLBACK_FEATURE_NAMES
 
                     if scaler is None:
                         st.error("Scaler not loaded! Upload scaler_hybrid.pkl")
@@ -289,24 +279,25 @@ with tabs[1]:
                         X_scaled = scaler.transform(df[feature_names])
                         df_scaled = pd.DataFrame(X_scaled, columns=feature_names, index=df.index)
 
-                        out = predict_with_model(model_obj, df_scaled)
+                        # Predict probabilities for all rows
+                        proba = model_obj.predict_proba(df_scaled)
+                        classes = getattr(model_obj, "classes_", np.array([0, 1]))
+                        idx_high = int(np.where(classes == 1)[0][0]) if 1 in classes else 1
+                        p_high = proba[:, idx_high]
 
-                        result = pd.DataFrame()
-
-                        if "proba" in out:
-                            for i, cls in enumerate(out["classes_"]):
-                                result[f"{cls} (%)"] = (out["proba"][:, i] * 100).round(2).astype(str) + "%"
-
-                            high_risk_index = np.where(out["classes_"] == 1)[0][0] if 1 in out["classes_"] else -1
-                            if high_risk_index >= 0:
-                                proba_high = out["proba"][:, high_risk_index]
-                                result["Risk Level"] = [assign_risk_from_proba(p) for p in proba_high]
-
-                        result["Predicted Class"] = out["pred"]
+                        # Build results DataFrame
+                        result = pd.DataFrame(index=df.index)
+                        result["High Risk (%)"] = (p_high * 100).round(2).astype(str) + "%"
+                        result["Risk Level"] = [risk_label_from_proba(p) for p in p_high]
 
                         st.success("Predictions completed.")
-                        st.dataframe(result.head(20).style.applymap(style_risk, subset=["Risk Level"]), use_container_width=True)
+                        st.dataframe(
+                            result.head(20).style.applymap(style_risk, subset=["Risk Level"]),
+                            use_container_width=True
+                        )
 
+                        # Download
                         df_download_button(result, "predictions.csv", "Download predictions")
+
                 except Exception as e:
                     st.error(f"Prediction failed. Error: {e}")
