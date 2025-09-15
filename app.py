@@ -246,7 +246,7 @@ with tabs[0]:
                 st.markdown(f"### Prediction Result\n**{risk_label} ({percent:.2f}%)**")
 
                 # ✅ Risk Indicators
-                st.markdown("### Risk Indicators (from SHAP)")
+                st.markdown("### Risk Indicators")
                 if risk_label == "Low Risk":
                     st.markdown("✅ All features are within normal range.")
                 else:
@@ -301,3 +301,4 @@ with tabs[1]:
 
                 except Exception as e:
                     st.error(f"Prediction failed. Error: {e}")
+
